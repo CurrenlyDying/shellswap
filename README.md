@@ -4,6 +4,13 @@ A simple and safe command-line utility to quickly swap the root user's default l
 
 It directly modifies the root user's entry in `/etc/passwd`.
 
+## Quick Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-binary.sh | sudo bash
+````
+⚠️ This is not a deb package, for installation as dev package scroll a bit lower on the page ⚠️
+
 ## ✨ Features
 
 * **Easy Switching:** Toggle between Bash and Zsh for root with a single command.
