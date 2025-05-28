@@ -27,13 +27,13 @@ You can install `shellswap` using one of the following methods.
 This method downloads the latest `.deb` package and installs it using `apt` (with a fallback to `dpkg`). This is generally the preferred method for systems that use `.deb` packages as it allows for easier updates and removal via the package manager.
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-deb.sh](https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-deb.sh) | sudo bash
+curl -fsSL https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-deb.sh | sudo bash
 ```
 
 *(Alternatively, using `wget`):*
 
 ```bash
-wget -qO- [https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-deb.sh](https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-deb.sh) | sudo bash
+wget -qO- https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-deb.sh | sudo bash
 ```
 
 This script will:
@@ -49,7 +49,7 @@ This script will:
 This method downloads the latest pre-compiled binary for your architecture and places it in `/bin`.
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-binary.sh](https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-binary.sh) | sudo bash
+curl -fsSL https://raw.githubusercontent.com/CurrenlyDying/shellswap/refs/heads/main/install-binary.sh | sudo bash
 ````
 
 This script will:
@@ -98,7 +98,7 @@ If you prefer to build `shellswap` from source:
 2.  **Clone the repository:**
 
     ```bash
-    git clone [https://github.com/CurrenlyDying/shellswap.git](https://github.com/CurrenlyDying/shellswap.git)
+    git clone https://github.com/CurrenlyDying/shellswap.git
     cd shellswap
     ```
 
