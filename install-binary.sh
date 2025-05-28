@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # --- Configuration ---
-REPO_OWNER="loputo"
+REPO_OWNER="CurrenlyDying"
 REPO_NAME="shellswap"
 BINARY_NAME="shellswap"
 INSTALL_DIR="/bin"
