@@ -1,5 +1,6 @@
 #!/bin/sh
 # Script to download and install the latest shellswap .deb package from GitHub Releases.
+# Simplified to use only curl, grep, and sed for release parsing.
 
 # Exit on error, treat unset variables as an error, and ensure pipe failures are caught.
 set -euo pipefail
@@ -7,7 +8,7 @@ set -euo pipefail
 # --- Configuration ---
 REPO_OWNER="CurrenlyDying"
 REPO_NAME="shellswap"
-DEB_NAME_PREFIX="shellswap"
+DEB_NAME_PREFIX="shellswap" # Used to help identify the .deb file
 GITHUB_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
 
 # --- Color Definitions ---
@@ -47,9 +48,10 @@ case $(uname -m) in
         exit 1
         ;;
 esac
-EXPECTED_DEB_PATTERN_SUFFIX="_${ARCH}.deb"
-# Regex for awk to match asset name (e.g. shellswap_ANYTHING_amd64.deb)
-DEB_NAME_REGEX_PATTERN="^${DEB_NAME_PREFIX}[^[:space:]\"]*${EXPECTED_DEB_PATTERN_SUFFIX}$"
+# We expect asset names like: shellswap_VERSION_amd64.deb
+# So we will grep for a URL containing DEB_NAME_PREFIX and _${ARCH}.deb
+EXPECTED_DEB_NAME_PARTIAL_PATTERN="${DEB_NAME_PREFIX}"
+EXPECTED_DEB_SUFFIX_PATTERN="_${ARCH}.deb"
 
 # --- Main Script ---
 echo_step "Starting shellswap .deb package installation"
@@ -63,13 +65,18 @@ if ! command -v curl >/dev/null 2>&1; then
     echo_error "'curl' is required but not installed. Please install curl."
     exit 1
 fi
-JQ_CMD=$(command -v jq || true)
-AWK_CMD=$(command -v awk || true)
+if ! command -v grep >/dev/null 2>&1; then
+    echo_error "'grep' is required but not installed."
+    exit 1
+fi
+if ! command -v sed >/dev/null 2>&1; then
+    echo_error "'sed' is required but not installed."
+    exit 1
+fi
 if ! command -v apt >/dev/null 2>&1 && ! command -v dpkg >/dev/null 2>&1; then
     echo_error "'apt' and 'dpkg' commands not found. Cannot install .deb package."
     exit 1
 fi
-
 
 echo_info "Fetching latest release information for ${MAGENTA}${REPO_OWNER}/${REPO_NAME}${RESET}..."
 RELEASE_INFO=$(curl -sSL "${GITHUB_API_URL}")
@@ -80,70 +87,42 @@ if [ -z "$RELEASE_INFO" ]; then
 fi
 
 DOWNLOAD_URL=""
-ASSET_NAME=""
+ASSET_NAME="" # We'll try to derive this from the URL if possible
 
-if [ -n "$JQ_CMD" ]; then
-    echo_info "Attempting to find .deb asset using 'jq'..."
-    ASSET_INFO_JSON=$("$JQ_CMD" -r ".assets[] | select(.name | startswith(\"${DEB_NAME_PREFIX}\") and endswith(\"${EXPECTED_DEB_PATTERN_SUFFIX}\")) | {name, url: .browser_download_url} | input_filename=\"-\" " <<< "$RELEASE_INFO" | head -n 1) # Get first match as JSON object
-    if [ -n "$ASSET_INFO_JSON" ] && [ "$ASSET_INFO_JSON" != "null" ]; then
-        ASSET_NAME=$(echo "$ASSET_INFO_JSON" | "$JQ_CMD" -r '.name')
-        DOWNLOAD_URL=$(echo "$ASSET_INFO_JSON" | "$JQ_CMD" -r '.url')
-    fi
-fi
+echo_info "Attempting to find .deb asset URL using 'grep' and 'sed'..."
+
+# Strategy:
+# 1. Grep all browser_download_url lines.
+# 2. From those, grep for lines that contain our expected name prefix AND suffix.
+# 3. Extract the URL using sed.
+# This assumes the URL itself will contain identifiable parts of the .deb filename.
+DOWNLOAD_URL=$(echo "$RELEASE_INFO" | \
+    grep -Eo "\"browser_download_url\": \"[^\"]*\"" | \
+    grep "${EXPECTED_DEB_NAME_PARTIAL_PATTERN}" | \
+    grep "${EXPECTED_DEB_SUFFIX_PATTERN}" | \
+    sed -E 's/.*"browser_download_url": "([^"]+)".*/\1/' | \
+    head -n 1)
+
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    if [ -n "$JQ_CMD" ]; then
-        echo_warning "Failed to find .deb asset using 'jq', or 'jq' is not installed/functional."
-    else
-        echo_warning "'jq' not found."
-    fi
-
-    if [ -n "$AWK_CMD" ]; then
-        echo_info "Attempting to find .deb asset using 'awk' fallback..."
-        AWK_OUTPUT=$(echo "$RELEASE_INFO" | "$AWK_CMD" -v name_regex="$DEB_NAME_REGEX_PATTERN" '
-            BEGIN { RS="},{" } # Split records by asset separator-ish
-            /"name"[[:space:]]*:[[:space:]]*"'/ { # Basic check for a "name" field start
-                current_name=""
-                # Extract current asset name using match()
-                if (match($0, /"name"[[:space:]]*:[[:space:]]*"([^"]+)"/, arr_name)) {
-                    current_name=arr_name[1]
-                }
-
-                if (current_name ~ name_regex) { # Regex match for .deb name
-                    # If name matches, extract its browser_download_url
-                    if (match($0, /"browser_download_url"[[:space:]]*:[[:space:]]*"([^"]+)"/, arr_url)) {
-                        printf "%s\n%s\n", current_name, arr_url[1] # Output name then URL
-                        exit # Found it
-                    }
-                }
-            }
-        ')
-        if [ -n "$AWK_OUTPUT" ]; then
-            ASSET_NAME=$(echo "$AWK_OUTPUT" | sed -n '1p') # First line is asset name
-            DOWNLOAD_URL=$(echo "$AWK_OUTPUT" | sed -n '2p') # Second line is URL
-        else
-             # Ensure they are cleared if AWK_OUTPUT is empty to avoid using stale values from jq attempt
-            ASSET_NAME=""
-            DOWNLOAD_URL=""
-        fi
-    else
-        echo_warning "'awk' not found. Cannot use 'awk' fallback."
-    fi
-fi
-
-
-if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ] || [ -z "$ASSET_NAME" ]; then
-    echo_error "Could not find download URL for a .deb package matching pattern '${MAGENTA}${DEB_NAME_REGEX_PATTERN}${RESET}'."
-    echo_error "Neither 'jq' nor 'awk' fallback could determine the URL. Please check assets on GitHub Releases and their naming."
+    echo_error "Could not find download URL for a .deb package matching pattern '${MAGENTA}${EXPECTED_DEB_NAME_PARTIAL_PATTERN}...${EXPECTED_DEB_SUFFIX_PATTERN}${RESET}'."
+    echo_error "Please check assets on GitHub Releases and their naming. The script uses 'grep' and 'sed' for parsing."
     exit 1
 fi
 
-echo_info "Found .deb package: ${MAGENTA}${ASSET_NAME}${RESET}"
+# Try to get asset name from URL (basename)
+ASSET_NAME=$(basename "$DOWNLOAD_URL")
+if [ -z "$ASSET_NAME" ]; then # Fallback if basename fails (should not with valid URL)
+    ASSET_NAME="${DEB_NAME_PREFIX}_package${EXPECTED_DEB_SUFFIX_PATTERN}" # Generic name
+    echo_warning "Could not determine exact asset name from URL, using generic: ${ASSET_NAME}"
+fi
+
+echo_info "Found .deb package URL. Deduced asset name: ${MAGENTA}${ASSET_NAME}${RESET}"
 
 TEMP_DIR=$(mktemp -d)
 trap 'echo_info "Cleaning up temporary directory: ${TEMP_DIR}"; rm -rf "$TEMP_DIR"' EXIT
 
-TEMP_DEB_PATH="${TEMP_DIR}/${ASSET_NAME}" # ASSET_NAME now reliably comes from jq or awk
+TEMP_DEB_PATH="${TEMP_DIR}/${ASSET_NAME}"
 
 echo_step "Downloading ${ASSET_NAME}"
 echo_info "URL: ${DOWNLOAD_URL}"
@@ -163,9 +142,8 @@ echo_step "Installing .deb package"
 INSTALL_SUCCESS=0
 if command -v apt >/dev/null 2>&1; then
     echo_info "Attempting installation with 'apt install'..."
-    # Ensure apt lists are updated before trying to install a local deb that might have dependencies
     echo_info "Updating package lists (apt update)..."
-    if ! apt update -qq; then # -qq for quieter output
+    if ! apt update -qq; then
         echo_warning "'apt update' failed. Proceeding with install attempt, but dependencies might not be found if lists are stale."
     fi
 
@@ -189,7 +167,7 @@ if [ "$INSTALL_SUCCESS" -eq 0 ]; then
             else
                 echo_warning "Cannot advise 'apt --fix-broken install' as 'apt' is not available."
             fi
-            INSTALL_SUCCESS=1 # Considered successful at dpkg level, user needs to fix deps
+            INSTALL_SUCCESS=1
         else
             echo_error "'dpkg -i' also failed."
             echo_error "Failed to install .deb package. Please check the output for errors."
