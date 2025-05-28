@@ -7,7 +7,7 @@ set -euo pipefail
 # --- Configuration ---
 REPO_OWNER="CurrenlyDying"
 REPO_NAME="shellswap"
-DEB_NAME_PREFIX="shellswap" # Assuming .deb files start with "shellswap"
+DEB_NAME_PREFIX="shellswap"
 GITHUB_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
 
 # --- Color Definitions ---
@@ -21,11 +21,9 @@ MAGENTA='\033[0;35m'
 
 # --- Helper Functions ---
 _log_prefix() {
-    # $1: Color, $2: Level String
     printf "%s%s%s%s " "$1" "$BOLD" "[$2]" "$RESET"
 }
 echo_step() {
-    # $1: Message
     printf "\n%s==> %s%s%s\n" "$BLUE" "$BOLD" "$1" "$RESET"
 }
 echo_info() {
@@ -50,29 +48,28 @@ case $(uname -m) in
         ;;
 esac
 EXPECTED_DEB_PATTERN_SUFFIX="_${ARCH}.deb"
+# Regex for awk to match asset name (e.g. shellswap_ANYTHING_amd64.deb)
+DEB_NAME_REGEX_PATTERN="^${DEB_NAME_PREFIX}[^[:space:]\"]*${EXPECTED_DEB_PATTERN_SUFFIX}$"
 
 # --- Main Script ---
 echo_step "Starting shellswap .deb package installation"
 
-# Check for root privileges
 if [ "$(id -u)" -ne 0 ]; then
     echo_error "This script must be run as root. Please use 'sudo'."
     exit 1
 fi
 
-# Check for curl, apt, and dpkg
 if ! command -v curl >/dev/null 2>&1; then
     echo_error "'curl' is required but not installed. Please install curl."
     exit 1
 fi
-if ! command -v apt >/dev/null 2>&1; then
-    echo_warning "'apt' command not found. Installation might be limited."
-    # Allow to proceed, dpkg might still work
-fi
-if ! command -v dpkg >/dev/null 2>&1; then
-    echo_error "'dpkg' command not found. Cannot install .deb package."
+JQ_CMD=$(command -v jq || true)
+AWK_CMD=$(command -v awk || true)
+if ! command -v apt >/dev/null 2>&1 && ! command -v dpkg >/dev/null 2>&1; then
+    echo_error "'apt' and 'dpkg' commands not found. Cannot install .deb package."
     exit 1
 fi
+
 
 echo_info "Fetching latest release information for ${MAGENTA}${REPO_OWNER}/${REPO_NAME}${RESET}..."
 RELEASE_INFO=$(curl -sSL "${GITHUB_API_URL}")
@@ -85,36 +82,59 @@ fi
 DOWNLOAD_URL=""
 ASSET_NAME=""
 
-# Try to parse with jq if available
-if command -v jq >/dev/null 2>&1; then
-    ASSET_INFO=$(echo "$RELEASE_INFO" | jq -r ".assets[] | select(.name | startswith(\"${DEB_NAME_PREFIX}\") and endswith(\"${EXPECTED_DEB_PATTERN_SUFFIX}\"))")
-    if [ -n "$ASSET_INFO" ] && [ "$ASSET_INFO" != "null" ]; then
-        DOWNLOAD_URL=$(echo "$ASSET_INFO" | jq -r '.browser_download_url' | head -n 1)
-        ASSET_NAME=$(echo "$ASSET_INFO" | jq -r '.name' | head -n 1)
+if [ -n "$JQ_CMD" ]; then
+    echo_info "Attempting to find .deb asset using 'jq'..."
+    ASSET_INFO_JSON=$("$JQ_CMD" -r ".assets[] | select(.name | startswith(\"${DEB_NAME_PREFIX}\") and endswith(\"${EXPECTED_DEB_PATTERN_SUFFIX}\")) | {name, url: .browser_download_url} | input_filename=\"-\" " <<< "$RELEASE_INFO" | head -n 1) # Get first match as JSON object
+    if [ -n "$ASSET_INFO_JSON" ] && [ "$ASSET_INFO_JSON" != "null" ]; then
+        ASSET_NAME=$(echo "$ASSET_INFO_JSON" | "$JQ_CMD" -r '.name')
+        DOWNLOAD_URL=$(echo "$ASSET_INFO_JSON" | "$JQ_CMD" -r '.url')
     fi
 fi
 
-# Fallback to grep/awk if jq failed or not available
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo_warning "jq not available or failed to find .deb asset using jq. Trying grep/awk fallback..."
-    MATCHING_ASSET_LINE=$(echo "$RELEASE_INFO" | grep -Eio "\"name\": \"(${DEB_NAME_PREFIX}[^\"]*${EXPECTED_DEB_PATTERN_SUFFIX})\"[^\}]*\"browser_download_url\": \"([^\"]*)\"" | head -n 1)
-    if [ -n "$MATCHING_ASSET_LINE" ]; then
-         # Using a more robust sed to capture name and URL if both are on the same "asset block" context
-         # This regex is an example and might need adjustment based on actual GitHub API JSON snippet structure
-        ASSET_NAME=$(echo "$MATCHING_ASSET_LINE" | sed -n 's/.*"name": "\([^"]*\)".*/\1/p')
-        DOWNLOAD_URL=$(echo "$MATCHING_ASSET_LINE" | sed -n 's/.*"browser_download_url": "\([^"]*\)".*/\1/p')
+    if [ -n "$JQ_CMD" ]; then
+        echo_warning "Failed to find .deb asset using 'jq', or 'jq' is not installed/functional."
+    else
+        echo_warning "'jq' not found."
+    fi
 
-        # Basic check if extracted name truly matches pattern (sed might be too greedy)
-        if ! echo "$ASSET_NAME" | grep -qE "^${DEB_NAME_PREFIX}.*${EXPECTED_DEB_PATTERN_SUFFIX}$"; then
-            ASSET_NAME="" # Invalidate if name doesn't fit
+    if [ -n "$AWK_CMD" ]; then
+        echo_info "Attempting to find .deb asset using 'awk' fallback..."
+        AWK_OUTPUT=$(echo "$RELEASE_INFO" | "$AWK_CMD" -v name_regex="$DEB_NAME_REGEX_PATTERN" '
+            BEGIN { RS="},{" } # Split records by asset separator-ish
+            /"name"[[:space:]]*:[[:space:]]*"'/ { # Basic check for a "name" field start
+                current_name=""
+                # Extract current asset name using match()
+                if (match($0, /"name"[[:space:]]*:[[:space:]]*"([^"]+)"/, arr_name)) {
+                    current_name=arr_name[1]
+                }
+
+                if (current_name ~ name_regex) { # Regex match for .deb name
+                    # If name matches, extract its browser_download_url
+                    if (match($0, /"browser_download_url"[[:space:]]*:[[:space:]]*"([^"]+)"/, arr_url)) {
+                        printf "%s\n%s\n", current_name, arr_url[1] # Output name then URL
+                        exit # Found it
+                    }
+                }
+            }
+        ')
+        if [ -n "$AWK_OUTPUT" ]; then
+            ASSET_NAME=$(echo "$AWK_OUTPUT" | sed -n '1p') # First line is asset name
+            DOWNLOAD_URL=$(echo "$AWK_OUTPUT" | sed -n '2p') # Second line is URL
+        else
+             # Ensure they are cleared if AWK_OUTPUT is empty to avoid using stale values from jq attempt
+            ASSET_NAME=""
             DOWNLOAD_URL=""
         fi
+    else
+        echo_warning "'awk' not found. Cannot use 'awk' fallback."
     fi
 fi
 
+
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ] || [ -z "$ASSET_NAME" ]; then
-    echo_error "Could not find download URL for a .deb package matching pattern '${MAGENTA}${DEB_NAME_PREFIX}...${EXPECTED_DEB_PATTERN_SUFFIX}${RESET}'."
-    echo_error "Please check the GitHub Releases page for available assets and naming."
+    echo_error "Could not find download URL for a .deb package matching pattern '${MAGENTA}${DEB_NAME_REGEX_PATTERN}${RESET}'."
+    echo_error "Neither 'jq' nor 'awk' fallback could determine the URL. Please check assets on GitHub Releases and their naming."
     exit 1
 fi
 
@@ -123,7 +143,7 @@ echo_info "Found .deb package: ${MAGENTA}${ASSET_NAME}${RESET}"
 TEMP_DIR=$(mktemp -d)
 trap 'echo_info "Cleaning up temporary directory: ${TEMP_DIR}"; rm -rf "$TEMP_DIR"' EXIT
 
-TEMP_DEB_PATH="${TEMP_DIR}/${ASSET_NAME}"
+TEMP_DEB_PATH="${TEMP_DIR}/${ASSET_NAME}" # ASSET_NAME now reliably comes from jq or awk
 
 echo_step "Downloading ${ASSET_NAME}"
 echo_info "URL: ${DOWNLOAD_URL}"
@@ -143,6 +163,12 @@ echo_step "Installing .deb package"
 INSTALL_SUCCESS=0
 if command -v apt >/dev/null 2>&1; then
     echo_info "Attempting installation with 'apt install'..."
+    # Ensure apt lists are updated before trying to install a local deb that might have dependencies
+    echo_info "Updating package lists (apt update)..."
+    if ! apt update -qq; then # -qq for quieter output
+        echo_warning "'apt update' failed. Proceeding with install attempt, but dependencies might not be found if lists are stale."
+    fi
+
     if apt install -y "${TEMP_DEB_PATH}"; then
         echo_info "${GREEN}${BOLD}${DEB_NAME_PREFIX} installed successfully using apt!${RESET}"
         INSTALL_SUCCESS=1
@@ -154,14 +180,23 @@ else
 fi
 
 if [ "$INSTALL_SUCCESS" -eq 0 ]; then
-    echo_info "Attempting installation with 'dpkg -i'..."
-    if dpkg -i "${TEMP_DEB_PATH}"; then
-        echo_warning "${YELLOW}${BOLD}${DEB_NAME_PREFIX} installed with dpkg.${RESET} Dependencies might be missing."
-        echo_info "Please run ${MAGENTA}sudo apt --fix-broken install${RESET} to resolve any dependency issues."
-        INSTALL_SUCCESS=1 # Considered successful at dpkg level, user needs to fix deps
+    if command -v dpkg >/dev/null 2>&1; then
+        echo_info "Attempting installation with 'dpkg -i'..."
+        if dpkg -i "${TEMP_DEB_PATH}"; then
+            echo_warning "${YELLOW}${BOLD}${DEB_NAME_PREFIX} installed with dpkg.${RESET} Dependencies might be missing."
+            if command -v apt >/dev/null 2>&1; then
+                 echo_info "Please run ${MAGENTA}sudo apt --fix-broken install${RESET} to resolve any dependency issues."
+            else
+                echo_warning "Cannot advise 'apt --fix-broken install' as 'apt' is not available."
+            fi
+            INSTALL_SUCCESS=1 # Considered successful at dpkg level, user needs to fix deps
+        else
+            echo_error "'dpkg -i' also failed."
+            echo_error "Failed to install .deb package. Please check the output for errors."
+            exit 1
+        fi
     else
-        echo_error "'dpkg -i' also failed."
-        echo_error "Failed to install .deb package. Please check the output for errors."
+        echo_error "'dpkg' command not found, and 'apt' failed or was not available. Cannot install .deb package."
         exit 1
     fi
 fi
