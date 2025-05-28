@@ -126,7 +126,8 @@ If you prefer to build `shellswap` from source:
 
 -----
 
-Made with ❤️ by CurrenlyDying (loputo)
 
-```
-```
+
+
+
+Made with ❤️ by CurrenlyDying (loputo)
