@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # --- Configuration ---
-REPO_OWNER="loputo"
+REPO_OWNER="CurrenlyDying"
 REPO_NAME="shellswap"
 DEB_NAME_PREFIX="shellswap" # Assuming .deb files start with "shellswap"
 GITHUB_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
