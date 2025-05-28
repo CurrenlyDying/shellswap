@@ -1,5 +1,6 @@
 #!/bin/sh
 # Script to download and install the latest shellswap binary from GitHub Releases.
+# Simplified to use only curl, grep, and sed for release parsing.
 
 # Exit on error, treat unset variables as an error, and ensure pipe failures are caught.
 set -euo pipefail
@@ -22,11 +23,9 @@ MAGENTA='\033[0;35m'
 
 # --- Helper Functions ---
 _log_prefix() {
-    # $1: Color, $2: Level String
     printf "%s%s%s%s " "$1" "$BOLD" "[$2]" "$RESET"
 }
 echo_step() {
-    # $1: Message
     printf "\n%s==> %s%s%s\n" "$BLUE" "$BOLD" "$1" "$RESET"
 }
 echo_info() {
@@ -50,7 +49,7 @@ case $(uname -m) in
         exit 1
         ;;
 esac
-EXPECTED_ASSET_NAME="${BINARY_NAME}-${ARCH}"
+EXPECTED_ASSET_NAME="${BINARY_NAME}-${ARCH}" # e.g., shellswap-amd64
 
 # --- Main Script ---
 echo_step "Starting shellswap binary installation"
@@ -64,8 +63,15 @@ if ! command -v curl >/dev/null 2>&1; then
     echo_error "'curl' is required but not installed. Please install curl."
     exit 1
 fi
-JQ_CMD=$(command -v jq || true)
-AWK_CMD=$(command -v awk || true)
+if ! command -v grep >/dev/null 2>&1; then
+    echo_error "'grep' is required but not installed."
+    exit 1
+fi
+if ! command -v sed >/dev/null 2>&1; then
+    echo_error "'sed' is required but not installed."
+    exit 1
+fi
+
 
 echo_info "Fetching latest release information for ${MAGENTA}${REPO_OWNER}/${REPO_NAME}${RESET}..."
 RELEASE_INFO=$(curl -sSL "${GITHUB_API_URL}")
@@ -76,46 +82,25 @@ if [ -z "$RELEASE_INFO" ]; then
 fi
 
 DOWNLOAD_URL=""
-if [ -n "$JQ_CMD" ]; then
-    echo_info "Attempting to find asset URL using 'jq'..."
-    DOWNLOAD_URL=$(echo "$RELEASE_INFO" | "$JQ_CMD" -r ".assets[] | select(.name == \"${EXPECTED_ASSET_NAME}\") | .browser_download_url")
+echo_info "Attempting to find asset URL using 'grep' and 'sed'..."
+
+# Try to find the line containing the browser_download_url for the specific asset name
+# and extract the URL. This assumes the asset name is part of the URL or nearby.
+# The grep pattern looks for "browser_download_url": "ANYTHING_ENDING_WITH_EXPECTED_ASSET_NAME"
+# This is more direct if the asset name appears at the end of the URL path.
+DOWNLOAD_URL=$(echo "$RELEASE_INFO" | grep -Eo "\"browser_download_url\": \"[^\"]*${EXPECTED_ASSET_NAME}\"" | sed -E 's/.*"browser_download_url": "([^"]+)".*/\1/' | head -n 1)
+
+# If the above didn't work (e.g. asset name not directly at end of URL path, but asset name is unique)
+# A slightly broader approach: find any URL that contains the asset name.
+if [ -z "$DOWNLOAD_URL" ]; then
+    echo_warning "First attempt to find URL failed. Trying broader search for asset: ${EXPECTED_ASSET_NAME}"
+    DOWNLOAD_URL=$(echo "$RELEASE_INFO" | grep -Eo "\"browser_download_url\": \"[^\"]*\"" | grep "${EXPECTED_ASSET_NAME}" | sed -E 's/.*"browser_download_url": "([^"]+)".*/\1/' | head -n 1)
 fi
 
-if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    if [ -n "$JQ_CMD" ]; then
-        echo_warning "Failed to find asset using 'jq', or 'jq' is not installed/functional."
-    else
-        echo_warning "'jq' not found."
-    fi
-
-    if [ -n "$AWK_CMD" ]; then
-        echo_info "Attempting to find asset URL using 'awk' fallback..."
-        DOWNLOAD_URL=$(echo "$RELEASE_INFO" | "$AWK_CMD" -v asset_to_find="$EXPECTED_ASSET_NAME" '
-            BEGIN { RS="},{" } # Split records by asset separator-ish
-            /"name"[[:space:]]*:[[:space:]]*"'/ { # Basic check for a "name" field start
-                current_name=""
-                # Extract current asset name using match()
-                if (match($0, /"name"[[:space:]]*:[[:space:]]*"([^"]+)"/, arr_name)) {
-                    current_name=arr_name[1]
-                }
-
-                if (current_name == asset_to_find) {
-                    # If name matches, extract its browser_download_url
-                    if (match($0, /"browser_download_url"[[:space:]]*:[[:space:]]*"([^"]+)"/, arr_url)) {
-                        print arr_url[1]
-                        exit # Found it
-                    }
-                }
-            }
-        ')
-    else
-        echo_warning "'awk' not found. Cannot use 'awk' fallback."
-    fi
-fi
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
     echo_error "Could not find download URL for asset '${MAGENTA}${EXPECTED_ASSET_NAME}${RESET}' for architecture '${MAGENTA}${ARCH}${RESET}'."
-    echo_error "Neither 'jq' nor 'awk' fallback could determine the URL. Please check assets on GitHub Releases."
+    echo_error "Please check assets on GitHub Releases. The script uses 'grep' and 'sed' for parsing."
     exit 1
 fi
 
