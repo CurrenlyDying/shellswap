@@ -11,13 +11,32 @@ BINARY_NAME="shellswap"
 INSTALL_DIR="/bin"
 GITHUB_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
 
-# --- Helper Functions ---
-echo_info() {
-    printf "\033[32m[INFO]\033[0m %s\n" "$1"
-}
+# --- Color Definitions ---
+RESET='\033[0m'
+BOLD='\033[1m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 
+# --- Helper Functions ---
+_log_prefix() {
+    # $1: Color, $2: Level String
+    printf "%s%s%s%s " "$1" "$BOLD" "[$2]" "$RESET"
+}
+echo_step() {
+    # $1: Message
+    printf "\n%s==> %s%s%s\n" "$BLUE" "$BOLD" "$1" "$RESET"
+}
+echo_info() {
+    printf "%s%s\n" "$(_log_prefix "$GREEN" "INFO")" "$1"
+}
+echo_warning() {
+    printf "%s%s\n" "$(_log_prefix "$YELLOW" "WARN")" "$1"
+}
 echo_error() {
-    printf "\033[31m[ERROR]\033[0m %s\n" "$1" >&2
+    printf "%s%s\n" "$(_log_prefix "$RED" "ERROR")" "$1" >&2
 }
 
 # --- Determine Architecture ---
@@ -34,9 +53,9 @@ esac
 EXPECTED_ASSET_NAME="${BINARY_NAME}-${ARCH}"
 
 # --- Main Script ---
-echo_info "Starting shellswap binary installation..."
+echo_step "Starting shellswap binary installation"
 
-# Check for root privileges (script is piped to sudo bash, but good check)
+# Check for root privileges
 if [ "$(id -u)" -ne 0 ]; then
     echo_error "This script must be run as root. Please use 'sudo'."
     exit 1
@@ -44,11 +63,12 @@ fi
 
 # Check for curl
 if ! command -v curl >/dev/null 2>&1; then
-    echo_error "curl is required but not installed. Please install curl."
+    echo_error "'curl' is required but not installed. Please install curl."
     exit 1
 fi
 
-echo_info "Fetching latest release information for ${REPO_OWNER}/${REPO_NAME}..."
+echo_info "Fetching latest release information for ${MAGENTA}${REPO_OWNER}/${REPO_NAME}${RESET}..."
+# Fetch release info silently for parsing
 RELEASE_INFO=$(curl -sSL "${GITHUB_API_URL}")
 
 if [ -z "$RELEASE_INFO" ]; then
@@ -64,48 +84,49 @@ fi
 
 # Fallback to grep/awk if jq failed or not available
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo_info "jq not available or failed to find asset. Trying grep/awk fallback..."
-    # This grep/awk method is more fragile and depends on consistent JSON formatting from GitHub.
-    # It looks for a line containing browser_download_url and the expected asset name, then extracts the URL.
+    echo_warning "jq not available or failed to find asset using jq. Trying grep/awk fallback..."
     DOWNLOAD_URL=$(echo "$RELEASE_INFO" | grep -o "browser_download_url\": \"[^\"]*${EXPECTED_ASSET_NAME}\"" | awk -F'"' '{print $4}')
 fi
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo_error "Could not find download URL for asset '${EXPECTED_ASSET_NAME}' for architecture '${ARCH}'."
+    echo_error "Could not find download URL for asset '${MAGENTA}${EXPECTED_ASSET_NAME}${RESET}' for architecture '${MAGENTA}${ARCH}${RESET}'."
     echo_error "Please check the GitHub Releases page for available assets."
     exit 1
 fi
 
-echo_info "Found download URL: ${DOWNLOAD_URL}"
+echo_info "Found download URL for ${MAGENTA}${EXPECTED_ASSET_NAME}${RESET}"
 
 TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT # Ensure temporary directory is cleaned up
+trap 'echo_info "Cleaning up temporary directory: ${TEMP_DIR}"; rm -rf "$TEMP_DIR"' EXIT # Ensure temporary directory is cleaned up
 
 TEMP_BINARY_PATH="${TEMP_DIR}/${BINARY_NAME}"
 
-echo_info "Downloading ${BINARY_NAME} to ${TEMP_BINARY_PATH}..."
-if ! curl -LSs --fail -o "${TEMP_BINARY_PATH}" "${DOWNLOAD_URL}"; then
+echo_step "Downloading ${BINARY_NAME} binary"
+echo_info "URL: ${DOWNLOAD_URL}"
+# Use --progress-bar for user feedback, -L to follow redirects, -f to fail on server errors
+if ! curl -Lf --progress-bar -o "${TEMP_BINARY_PATH}" "${DOWNLOAD_URL}"; then
     echo_error "Failed to download binary from ${DOWNLOAD_URL}"
     exit 1
 fi
 
-echo_info "Verifying download..."
+echo_step "Verifying download"
 if [ ! -s "${TEMP_BINARY_PATH}" ]; then
     echo_error "Downloaded file is empty."
     exit 1
 fi
-chmod +x "${TEMP_BINARY_PATH}" # Make it executable to do a basic run test if desired, or just for install
+chmod +x "${TEMP_BINARY_PATH}"
+echo_info "Download verified."
 
-echo_info "Installing ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}..."
+echo_step "Installing ${BINARY_NAME}"
+echo_info "Moving binary to ${MAGENTA}${INSTALL_DIR}/${BINARY_NAME}${RESET}..."
 if mv "${TEMP_BINARY_PATH}" "${INSTALL_DIR}/${BINARY_NAME}"; then
     chown root:root "${INSTALL_DIR}/${BINARY_NAME}"
     chmod 755 "${INSTALL_DIR}/${BINARY_NAME}" # rwxr-xr-x
-    echo_info "${BINARY_NAME} installed successfully to ${INSTALL_DIR}/${BINARY_NAME}"
-    echo_info "You can now run it with 'sudo ${BINARY_NAME}'"
+    echo_info "${GREEN}${BOLD}${BINARY_NAME} installed successfully!${RESET}"
+    echo_info "You can now run it with: ${MAGENTA}sudo ${BINARY_NAME}${RESET}"
 else
     echo_error "Failed to move binary to ${INSTALL_DIR}."
-    # Attempt to clean up if mv failed but file might be there partially
-    rm -f "${INSTALL_DIR}/${BINARY_NAME}" >/dev/null 2>&1
+    rm -f "${INSTALL_DIR}/${BINARY_NAME}" >/dev/null 2>&1 # Attempt cleanup
     exit 1
 fi
 
