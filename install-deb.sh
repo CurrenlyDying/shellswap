@@ -1,6 +1,7 @@
 #!/bin/sh
 # Script to download and install the latest shellswap .deb package from GitHub Releases.
 # Simplified to use only curl, grep, and sed for release parsing.
+# Colors fixed using printf %b.
 
 # Exit on error, treat unset variables as an error, and ensure pipe failures are caught.
 set -euo pipefail
@@ -22,12 +23,19 @@ MAGENTA='\033[0;35m'
 
 # --- Helper Functions ---
 _log_prefix() {
-    printf "%s%s%s%s " "$1" "$BOLD" "[$2]" "$RESET"
+    # $1: Color variable (e.g., GREEN)
+    # $2: Level String (e.g., "INFO")
+    # Use %b to interpret backslash escapes in $1, $BOLD, and $RESET variables
+    printf "%b%b[%s]%b " "$1" "$BOLD" "$2" "$RESET"
 }
 echo_step() {
-    printf "\n%s==> %s%s%s\n" "$BLUE" "$BOLD" "$1" "$RESET"
+    # $1: Message
+    # Use %b to interpret backslash escapes in $BLUE, $BOLD, and $RESET variables
+    printf "\n%b==> %b%s%b\n" "$BLUE" "$BOLD" "$1" "$RESET"
 }
 echo_info() {
+    # The output of _log_prefix already contains processed escape sequences,
+    # so we print it as a string (%s). $1 is the message text.
     printf "%s%s\n" "$(_log_prefix "$GREEN" "INFO")" "$1"
 }
 echo_warning() {
@@ -61,18 +69,13 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-if ! command -v curl >/dev/null 2>&1; then
-    echo_error "'curl' is required but not installed. Please install curl."
-    exit 1
-fi
-if ! command -v grep >/dev/null 2>&1; then
-    echo_error "'grep' is required but not installed."
-    exit 1
-fi
-if ! command -v sed >/dev/null 2>&1; then
-    echo_error "'sed' is required but not installed."
-    exit 1
-fi
+# Check for essential commands
+for cmd in curl grep sed basename mktemp; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo_error "'$cmd' is required but not installed. Please install it."
+        exit 1
+    fi
+done
 if ! command -v apt >/dev/null 2>&1 && ! command -v dpkg >/dev/null 2>&1; then
     echo_error "'apt' and 'dpkg' commands not found. Cannot install .deb package."
     exit 1
@@ -87,13 +90,13 @@ if [ -z "$RELEASE_INFO" ]; then
 fi
 
 DOWNLOAD_URL=""
-ASSET_NAME="" # We'll try to derive this from the URL if possible
+ASSET_NAME=""
 
 echo_info "Attempting to find .deb asset URL using 'grep' and 'sed'..."
 
 # Strategy:
-# 1. Grep all browser_download_url lines.
-# 2. From those, grep for lines that contain our expected name prefix AND suffix.
+# 1. Grep all browser_download_url lines from the JSON.
+# 2. From those, further grep for lines that contain our expected name prefix AND suffix.
 # 3. Extract the URL using sed.
 # This assumes the URL itself will contain identifiable parts of the .deb filename.
 DOWNLOAD_URL=$(echo "$RELEASE_INFO" | \
@@ -110,10 +113,9 @@ if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
     exit 1
 fi
 
-# Try to get asset name from URL (basename)
 ASSET_NAME=$(basename "$DOWNLOAD_URL")
-if [ -z "$ASSET_NAME" ]; then # Fallback if basename fails (should not with valid URL)
-    ASSET_NAME="${DEB_NAME_PREFIX}_package${EXPECTED_DEB_SUFFIX_PATTERN}" # Generic name
+if [ -z "$ASSET_NAME" ]; then
+    ASSET_NAME="${DEB_NAME_PREFIX}_package${EXPECTED_DEB_SUFFIX_PATTERN}" # Generic fallback name
     echo_warning "Could not determine exact asset name from URL, using generic: ${ASSET_NAME}"
 fi
 
@@ -148,7 +150,7 @@ if command -v apt >/dev/null 2>&1; then
     fi
 
     if apt install -y "${TEMP_DEB_PATH}"; then
-        echo_info "${GREEN}${BOLD}${DEB_NAME_PREFIX} installed successfully using apt!${RESET}"
+        echo_info "${GREEN}${BOLD}${DEB_NAME_PREFIX} installed successfully using apt!${RESET}" # Note: GREEN and BOLD are variables here
         INSTALL_SUCCESS=1
     else
         echo_warning "'apt install' failed. This might be due to unmet dependencies or other issues."
@@ -161,9 +163,12 @@ if [ "$INSTALL_SUCCESS" -eq 0 ]; then
     if command -v dpkg >/dev/null 2>&1; then
         echo_info "Attempting installation with 'dpkg -i'..."
         if dpkg -i "${TEMP_DEB_PATH}"; then
-            echo_warning "${YELLOW}${BOLD}${DEB_NAME_PREFIX} installed with dpkg.${RESET} Dependencies might be missing."
+            # Use %b for YELLOW, BOLD, RESET when printing the warning string directly
+            printf "%b%b%s installed with dpkg.%b Dependencies might be missing.\n" "$YELLOW" "$BOLD" "$DEB_NAME_PREFIX" "$RESET"
             if command -v apt >/dev/null 2>&1; then
-                 echo_info "Please run ${MAGENTA}sudo apt --fix-broken install${RESET} to resolve any dependency issues."
+                 # Use %b for MAGENTA and RESET
+                 printf "%bPlease run %bsudo apt --fix-broken install%b to resolve any dependency issues.%b\n" "$(_log_prefix "$GREEN" "INFO")" "$MAGENTA" "$RESET" "$RESET" # Bit complex, let's simplify
+                 echo_info "Please run ${MAGENTA}sudo apt --fix-broken install${RESET} to resolve any dependency issues." # Simpler
             else
                 echo_warning "Cannot advise 'apt --fix-broken install' as 'apt' is not available."
             fi
@@ -180,6 +185,8 @@ if [ "$INSTALL_SUCCESS" -eq 0 ]; then
 fi
 
 if [ "$INSTALL_SUCCESS" -eq 1 ]; then
+     # Use %b for MAGENTA and RESET
+     printf "%bYou should now be able to run the installed command, likely: %bsudo shellswap%b%b\n" "$(_log_prefix "$GREEN" "INFO")" "$MAGENTA" "$RESET" "$RESET" # Simpler
      echo_info "You should now be able to run the installed command, likely: ${MAGENTA}sudo shellswap${RESET}"
 fi
 
